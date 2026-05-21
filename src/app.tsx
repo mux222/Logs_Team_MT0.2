@@ -1108,7 +1108,7 @@ ${renderIdentifiers(ban.identifiers)}
           <span className={`nav-link ${activeSec === 'goals' ? 'active' : ''}`} onClick={() => setActiveSec('goals')}>أهدافنا</span>
           <span className={`nav-link ${activeSec === 'tickets' ? 'active' : ''}`} onClick={() => { setActiveSec('tickets'); setTicketViewMode(currentUser.role === UserRole.ADMIN ? 'create' : 'all'); }}>التذاكر</span>
           {isStaff && (
-            <span className={`nav-link ${activeSec === 'my_dashboard' ? 'active' : ''} !text-orange/90`} onClick={() => setActiveSec('my_dashboard')}>داشبوردي</span>
+            <span className={`nav-link ${activeSec === 'my_dashboard' ? 'active' : ''} !text-orange/90`} onClick={() => setActiveSec('my_dashboard')}>داشبورد</span>
           )}
           {isStaff && (
             <span className={`nav-link ${activeSec === 'notepad' ? 'active' : ''} !text-orange/90`} onClick={() => setActiveSec('notepad')}>المفكرة</span>
