@@ -3107,27 +3107,7 @@ ${renderIdentifiers(ban.identifiers)}
                   </div>
                 </div>
 
-                <div className="p-5 bg-orange/5 border border-orange/20 rounded-3xl space-y-3">
-                  <h4 className="text-sm font-black text-orange font-arabic flex items-center gap-2 font-orbitron">🎯 حل المشكلة بثوانٍ: سكريبت البناء السريع</h4>
-                  <p className="text-xs text-text-dim leading-relaxed font-arabic">
-                    لقد جهزنا سكريبت SQL متكامل يؤسس كافة الجداول ويمنح الصلاحيات اللازمة بثانية واحدة. اتبّع ما يلي:
-                  </p>
-                  <ol className="text-[11px] text-text-dim space-y-2 list-decimal list-inside pr-2 font-arabic leading-relaxed">
-                    <li>تفضل بفتح لوحة تحكم حسابك في <a href="https://supabase.com" target="_blank" rel="noopener noreferrer" className="text-orange underline font-bold">Supabase Console</a>.</li>
-                    <li>اختر مشروعك ثم انقر على <strong>SQL Editor</strong> من القائمة اليسرى.</li>
-                    <li>افتح سحب الأكواد من ملف <strong>SUPABASE_SETUP.sql</strong> الموجود في جذر مجلدات هذا المشروع وانسخه كاملاً.</li>
-                    <li>الصقه في محرر الاستعلامات بـ Supabase واضغط على الزر الأخضر <strong>Run</strong> لتأسيس الجداول بنجاح فوري!</li>
-                  </ol>
-                  <button 
-                    onClick={() => {
-                      setToast({ show: true, msg: "يرجى نسخ الملف SUPABASE_SETUP.sql من المجلد الرئيسي للمشروع" });
-                      setTimeout(() => setToast(null), 3000);
-                    }}
-                    className="btn-orange w-full !py-2.5 text-xs font-black shadow-lg"
-                  >
-                    أرشدني لملف التأسيس SQL Guide
-                  </button>
-                </div>
+                
               </div>
             </motion.div>
           </motion.div>
