@@ -931,7 +931,7 @@ ${renderIdentifiers(ban.identifiers)}
                     <div className="w-16 h-[1px] bg-gradient-to-l from-transparent to-orange/50" />
                   </div>
                   <p className="text-text-dim max-w-xl mx-auto text-sm md:text-lg font-arabic leading-relaxed tracking-wide font-medium">
-                    نظام Mystery Town المتقدم للرقابة التقنية وإدارة البيانات الأمنية. واجهة حصرية مخصصة للنخبة تضمن أعلى مستويات الشفافية والحماية الرقمية.
+نظام مستري تاون المتقدم للرقابة التقنية وإدارة البيانات الأمنية. واجهة حصرية مخصصة للنخبة تضمن أعلى مستويات الشفافية والحماية الرقمية                   
                   </p>
                 </motion.div>
               </div>
