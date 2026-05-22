@@ -130,7 +130,7 @@ export default function App() {
       try {
         const u = await getAll<User>('users');
         if (u.length === 0) {
-          const defaultAdmin: User = { user: 'admin', pass: '429', role: UserRole.MANAGER, status: 'active' };
+          const defaultAdmin: User = { user: 'admin', pass: '098', role: UserRole.MANAGER, status: 'active' };
           await putItem('users', defaultAdmin);
           setUsers([defaultAdmin]);
         } else {
