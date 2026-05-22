@@ -3,6 +3,20 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+
+const WORKER_URL = "https://r2-uploader.abotete1.workers.dev";
+
+const uploadVideoToR2 = async (file: File, fileName: string): Promise<string> => {
+  const response = await fetch(`${WORKER_URL}/${fileName}`, {
+    method: 'PUT',
+    body: file,
+    headers: { 'Content-Type': file.type },
+  });
+  if (!response.ok) throw new Error(await response.text());
+  const data = await response.json();
+  return data.url;
+};
+  
 import { useState, useEffect, useMemo, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
@@ -95,7 +109,7 @@ export default function App() {
     identifiers: ''
   });
   const [banEvidenceFiles, setBanEvidenceFiles] = useState<File[]>([]);
-  const [fullScreenMedia, setFullScreenMedia] = useState<string | null>(null);
+  const [fullScreenMedia, setFullScreenMedia] = useState<{ url: string; type: 'image' | 'video' } | null>(null);
   const [mediaPreviews, setMediaPreviews] = useState<{ url: string; type: 'image' | 'video' }[]>([]);
   const [selectedPreview, setSelectedPreview] = useState<{ url: string; type: 'image' | 'video'; name?: string } | null>(null);
 
@@ -337,7 +351,7 @@ export default function App() {
     });
   };
 
-  const sendTicket = async () => {
+const sendTicket = async () => {
     if (!ticketForm.subject || !ticketForm.body || !currentUser) return alert("أكمل البيانات");
     
     const initialMsg: Message = {
@@ -359,14 +373,51 @@ export default function App() {
     };
 
     if (ticketFile) {
-      const url = await fileToBase64(ticketFile);
-      newTicket.msgs.push({
-        sender: 'admin',
-        senderName: currentUser.user,
-        type: ticketFile.type.startsWith('image') ? 'image' : 'video',
-        url,
-        timestamp: Date.now() + 1
-      });
+      if (ticketFile.type.startsWith('video')) {
+        try {
+          const fileExtension = ticketFile.name.split('.').pop();
+          const fileName = `ticket_${Date.now()}_${Math.floor(Math.random() * 1000)}.${fileExtension}`;
+          
+// 1. فحص حجم ملف التذكرة (الحد الأقصى 100 ميجابايت)
+          const MAX_FILE_SIZE = 100 * 1024 * 1024;
+          if (ticketFile.size > MAX_FILE_SIZE) {
+            setToast({ show: true, msg: "❌ حجم ملف التذكرة كبير جداً! يرجى رفع مقطع أقل من 100 ميجابايت." });
+            setTimeout(() => setToast(null), 5000);
+            return;
+          }
+
+          // 2. تفعيل مؤشر التحميل
+          setToast({ show: true, msg: "⏳ جاري رفع مرفقات التذكرة... يرجى الانتظار." });
+
+          // 3. تحويل الملف إلى ArrayBuffer صلب لمنع خطأ getReader نهائياً 🚀
+          const publicUrl = await uploadVideoToR2(ticketFile, fileName);
+
+          // ✅ أضف هذين السطرين هنا فوراً لإنهاء مشكلة "جاري التحميل" المعلقة:
+          setToast({ show: true, msg: "✅ تم رفع المقطع وفتح التذكرة بنجاح!" });
+          setTimeout(() => setToast(null), 3000);
+
+          newTicket.msgs.push({
+            sender: 'admin',
+            senderName: currentUser.user,
+            type: 'video',
+            url: publicUrl,
+            timestamp: Date.now() + 1
+          });
+        } catch (storageErr: any) {
+          console.error("خطأ أثناء رفع فيديو التذكرة إلى R2:", storageErr.message);
+          alert("فشل رفع فيديو التذكرة: " + storageErr.message);
+          return;
+        }
+      } else {
+        const url = await fileToBase64(ticketFile);
+        newTicket.msgs.push({
+          sender: 'admin',
+          senderName: currentUser.user,
+          type: 'image',
+          url,
+          timestamp: Date.now() + 1
+        });
+      }
     }
 
     await putItem('tickets', newTicket);
@@ -375,9 +426,10 @@ export default function App() {
     setTicketFile(null);
     setTicketViewMode('my');
     setActiveTicketId(newTicket.id);
+    alert("تم فتح التذكرة بنجاح ! 🎫");
   };
 
-  const sendReply = async () => {
+const sendReply = async () => {
     if ((!replyInput && !replyFile) || !activeTicketId || !currentUser) return;
     
     const tIdx = tickets.findIndex(t => String(t.id) === String(activeTicketId));
@@ -387,14 +439,49 @@ export default function App() {
     const sender: 'admin' | 'logs' = currentUser.role === UserRole.ADMIN ? 'admin' : 'logs';
 
     if (replyFile) {
-      const url = await fileToBase64(replyFile);
-      ticket.msgs.push({
-        sender,
-        senderName: currentUser.user,
-        type: replyFile.type.startsWith('image') ? 'image' : 'video',
-        url,
-        timestamp: Date.now()
-      });
+      if (replyFile.type.startsWith('video')) {
+        try {
+          const fileExtension = replyFile.name.split('.').pop();
+          const fileName = `reply_${Date.now()}_${Math.floor(Math.random() * 1000)}.${fileExtension}`;
+          
+// 1. فحص حجم ملف الرد (الحد الأقصى 100 ميجابايت)
+          const MAX_FILE_SIZE = 100 * 1024 * 1024;
+          if (replyFile.size > MAX_FILE_SIZE) {
+            setToast({ show: true, msg: "❌ حجم مقطع الرد كبير جداً! الحد الأقصى هو 100 ميجابايت." });
+            setTimeout(() => setToast(null), 5000);
+            return;
+          }
+
+          // 2. تفعيل مؤشر التحميل للرد
+          setToast({ show: true, msg: "⏳ جاري رفع فيديو الرد... فضلاً انتظر ثواني." });
+
+          // 3. تحويل ملف الرد لمنع خطأ getReader نهائياً 🚀
+          const publicUrl = await uploadVideoToR2(replyFile, fileName);
+          setToast({ show: true, msg: "✅ تم إرسال الرد ورفع الفيديو بنجاح!" });
+          setTimeout(() => setToast(null), 3000);
+
+          ticket.msgs.push({
+            sender,
+            senderName: currentUser.user,
+            type: 'video',
+            url: publicUrl,
+            timestamp: Date.now()
+          });
+        } catch (storageErr: any) {
+          console.error("خطأ أثناء رفع فيديو الرد إلى R2:", storageErr.message);
+          alert("فشل رفع فيديو الرد: " + storageErr.message);
+          return;
+        }
+      } else {
+        const url = await fileToBase64(replyFile);
+        ticket.msgs.push({
+          sender,
+          senderName: currentUser.user,
+          type: 'image',
+          url,
+          timestamp: Date.now()
+        });
+      }
     }
 
     if (replyInput.trim()) {
@@ -470,7 +557,7 @@ export default function App() {
   // Ban Handlers
   const [editingBanId, setEditingBanId] = useState<number | null>(null);
 
-  const addBan = async () => {
+const addBan = async () => {
     if (!currentUser) return;
     if (!banForm.discordId || !banForm.reason || (banEvidenceFiles.length === 0 && !editingBanId)) {
       alert("جميع الحقول إجبارية ويجب رفع دليل واحد على الأقل!");
@@ -483,13 +570,50 @@ export default function App() {
       if (existing) evidence = [...existing.evidence];
     }
 
+    // الرفع الذكي: فصل الفيديوهات إلى Cloudflare R2 والصور إلى Base64
     for (const file of banEvidenceFiles) {
-      const url = await fileToBase64(file);
-      evidence.push({
-        type: file.type.startsWith('image') ? 'image' : 'video',
-        url,
-        name: file.name
-      });
+      if (file.type.startsWith('video')) {
+        try {
+          const fileExtension = file.name.split('.').pop();
+          const fileName = `${Date.now()}_${Math.floor(Math.random() * 1000)}.${fileExtension}`;
+          
+// 1. فحص حجم الملف (إذا تجاوز 100 ميجابايت نمنعه فوراً)
+          const MAX_FILE_SIZE = 100 * 1024 * 1024; // 100MB
+          if (file.size > MAX_FILE_SIZE) {
+            setToast({ show: true, msg: "❌ عذراً، حجم المقطع كبير جداً! الحد الأقصى المسموح به هو 100 ميجابايت لتجنب تعليق الموقع." });
+            setTimeout(() => setToast(null), 5000);
+            return; // إيقاف العملية
+          }
+
+          // 2. تفعيل مؤشر التحميل الخاص بالطابع الاحترافي
+          setToast({ show: true, msg: "⏳ جاري رفع مقطع الفيديو إلى التخزين السحابي... يرجى الانتظار وعدم إغلاق الصفحة." });
+
+// 3. تحويل الملف إلى ArrayBuffer صلب لمنع خطأ getReader نهائياً 🚀
+          const publicUrl = await uploadVideoToR2(file, fileName);
+
+          // ✅ أضف هذين السطرين هنا فوراً لإنهاء مشكلة "جاري التحميل" المعلقة:
+          setToast({ show: true, msg: "✅ تم تسجيل الباند ورفع المقطع بنجاح!" });
+          setTimeout(() => setToast(null), 3000);
+
+          evidence.push({
+            type: 'video',
+            url: publicUrl, // حفظ رابط R2 في سوبابيس
+            name: file.name
+          });
+        } catch (storageErr: any) {
+          console.error("خطأ أثناء رفع الفيديو إلى Cloudflare R2:", storageErr.message);
+          alert("فشل رفع الفيديو إلى Cloudflare R2: " + storageErr.message);
+          return; // إيقاف العملية لحماية السجل من الحفظ بدون الفيديو
+        }
+      } else {
+        // إذا كان الملف صورة، يتم التعامل معه بشكل طبيعي كـ Base64 كما هو
+        const url = await fileToBase64(file);
+        evidence.push({
+          type: 'image',
+          url,
+          name: file.name
+        });
+      }
     }
 
     if (editingBanId) {
@@ -513,12 +637,7 @@ export default function App() {
           await addAuditLog('Edit Ban', `Edited ban record for Discord ID: ${banForm.discordId} by ${currentUser.user}`);
           setShowBanForm(false);
           setEditingBanId(null);
-          setBanForm({ 
-            discordId: '', 
-            type: 'Ban', 
-            reason: '', 
-            identifiers: '' 
-          });
+          setBanForm({ discordId: '', type: 'Ban', reason: '', identifiers: '' });
           setBanEvidenceFiles([]);
           setMediaPreviews([]);
           alert("تم حفظ التعديلات!");
@@ -537,15 +656,10 @@ export default function App() {
       await addAuditLog('Add Ban', `Added new ban record for Discord ID: ${banForm.discordId}`);
       setShowBanForm(false);
       setEditingBanId(null);
-      setBanForm({ 
-        discordId: '', 
-        type: 'Ban', 
-        reason: '', 
-        identifiers: '' 
-      });
+      setBanForm({ discordId: '', type: 'Ban', reason: '', identifiers: '' });
       setBanEvidenceFiles([]);
       setMediaPreviews([]);
-      alert("تم بنجاح!");
+      alert("تم تسجيل الباند ورفع الأدلة بنجاح");
     }
   };
 
@@ -931,7 +1045,7 @@ ${renderIdentifiers(ban.identifiers)}
                     <div className="w-16 h-[1px] bg-gradient-to-l from-transparent to-orange/50" />
                   </div>
                   <p className="text-text-dim max-w-xl mx-auto text-sm md:text-lg font-arabic leading-relaxed tracking-wide font-medium">
-نظام مستري تاون المتقدم للرقابة التقنية وإدارة البيانات الأمنية. واجهة حصرية مخصصة للنخبة تضمن أعلى مستويات الشفافية والحماية الرقمية                   
+                   نظام مستري تاون المتقدم للرقابة التقنية وإدارة البيانات الأمنية. واجهة حصرية مخصصة للنخبة تضمن أعلى مستويات الشفافية والحماية الرقمية
                   </p>
                 </motion.div>
               </div>
@@ -1543,7 +1657,7 @@ ${renderIdentifiers(ban.identifiers)}
                                    {m.type === 'image' ? (
                                       <img src={m.url} className="rounded-2xl max-h-[500px] w-full object-cover border border-white/10 shadow-2xl" />
                                    ) : (
-                                      <video src={m.url} controls className="rounded-2xl max-h-[500px] w-full" />
+                                      <video src={m.url} controls autoPlay muted playsInline className="rounded-2xl max-h-[500px] w-full" />
                                    )}
                                  </div>
                                )}
@@ -1824,19 +1938,29 @@ ${renderIdentifiers(ban.identifiers)}
               </motion.div>
             )}
           </AnimatePresence>
-          <AnimatePresence>
+
+<AnimatePresence>
             {toast && (
               <motion.div 
                 initial={{ opacity: 0, y: 50, x: '-50%' }}
                 animate={{ opacity: 1, y: 0, x: '-50%' }}
                 exit={{ opacity: 0, y: 20, x: '-50%' }}
-                className="fixed bottom-10 left-1/2 z-[100] bg-orange text-black px-6 py-3 rounded-full font-bold shadow-[0_0_30px_rgba(255,106,0,0.4)] flex items-center gap-3"
+                className="fixed bottom-10 left-1/2 z-[100] bg-[#111] border border-orange/40 text-white px-6 py-3.5 rounded-xl font-bold shadow-[0_10px_40px_rgba(255,102,0,0.2)] flex items-center gap-3 backdrop-blur-md min-w-[300px] justify-center"
               >
-                <CheckCircle2 size={20} />
-                {toast.msg}
+                {/* فحص كلمة جاري من كائن التوست بشكل صحيح */}
+                {toast.msg.includes("جاري") ? (
+                  <div className="w-5 h-5 border-2 border-orange border-t-transparent rounded-full animate-spin shadow-[0_0_10px_#f60]" />
+                ) : toast.msg.includes("❌") ? (
+                  <XCircle size={20} className="text-red-500" />
+                ) : (
+                  <CheckCircle2 size={20} className="text-orange" />
+                )}
+                
+                <span className="text-sm font-black text-gray-100">{toast.msg}</span>
               </motion.div>
             )}
           </AnimatePresence>
+
           {activeSec === 'leaderboard' && isStaff && (
             <motion.div key="leaderboard" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} className="space-y-10 px-[4%] max-w-5xl mx-auto">
               <header className="text-center space-y-4">
@@ -2076,7 +2200,7 @@ ${renderIdentifiers(ban.identifiers)}
                                       <div className="absolute inset-0 bg-black/60 opacity-0 group-hover/ev:opacity-100 transition-all flex flex-col items-center justify-center gap-2">
                                         <button 
                                           className="w-12 h-8 bg-orange text-black rounded-lg text-[9px] font-black hover:scale-105 active:scale-95 transition-all flex items-center justify-center gap-1.5"
-                                          onClick={() => setFullScreenMedia(ev.url)}
+                                          onClick={() => setFullScreenMedia({ url: ev.url, type: ev.type as 'image' | 'video' })}
                                         >
                                           <Eye size={12} />
                                           معاينة
@@ -2542,11 +2666,11 @@ ${renderIdentifiers(ban.identifiers)}
                                   <div className="space-y-3">
                                     {m.type === 'image' ? (
                                       <div className="relative group/img overflow-hidden rounded-xl border border-black/20 shadow-lg">
-                                        <img src={m.url} className="max-h-[450px] w-full object-cover cursor-pointer group-hover/img:scale-105 transition-transform duration-500" onClick={() => setFullScreenMedia(m.url || null)} />
+                                        <img src={m.url} className="max-h-[450px] w-full object-cover cursor-pointer group-hover/img:scale-105 transition-transform duration-500" onClick={() => setFullScreenMedia(m.url ? { url: m.url, type: 'image' } : null)} />
                                         <div className="absolute inset-0 bg-black/20 group-hover/img:bg-transparent transition-colors pointer-events-none"></div>
                                       </div>
                                     ) : (
-                                      <video src={m.url} className="rounded-xl max-h-[450px] w-full shadow-2xl border border-black/20" controls />
+                                      <video src={m.url} className="rounded-xl max-h-[450px] w-full shadow-2xl border border-black/20" controls autoPlay muted playsInline preload="metadata" />
                                     )}
                                     <div className={`flex justify-between items-center text-[9px] uppercase tracking-widest font-black ${m.sender === 'logs' ? 'text-black/40' : 'text-white/20'}`}>
                                       <span>{m.type} Attachment</span>
@@ -3016,10 +3140,10 @@ ${renderIdentifiers(ban.identifiers)}
                 className="relative bg-[#050505] p-2 rounded-[32px] border-2 border-orange/40 shadow-[0_0_50px_rgba(0,0,0,0.8),0_0_30px_rgba(255,106,0,0.2)] pointer-events-auto overflow-hidden group"
                 onClick={e => e.stopPropagation()}
               >
-                {fullScreenMedia.includes('data:video') || fullScreenMedia.toLowerCase().includes('.mp4') || fullScreenMedia.toLowerCase().includes('video') ? (
-                  <video src={fullScreenMedia} controls autoPlay className="max-w-full max-h-[85vh] rounded-[24px] outline-none" />
+                {fullScreenMedia.type === 'video' ? (
+                  <video src={fullScreenMedia.url} controls autoPlay className="max-w-full max-h-[85vh] rounded-[24px] outline-none" />
                 ) : (
-                  <img src={fullScreenMedia} className="max-w-full max-h-[85vh] rounded-[24px] object-contain shadow-2xl" />
+                  <img src={fullScreenMedia.url} className="max-w-full max-h-[85vh] rounded-[24px] object-contain shadow-2xl" />
                 )}
                 
                 <div className="absolute top-6 left-6 flex items-center gap-3 bg-black/60 backdrop-blur-md px-4 py-2 rounded-xl border border-white/10 opacity-0 group-hover:opacity-100 transition-opacity">
@@ -3065,7 +3189,7 @@ ${renderIdentifiers(ban.identifiers)}
                   <div className="flex justify-between items-center">
                     <span className="text-xs text-text-dim font-arabic">مستوى الاتصال السحابي:</span>
                     {supabase ? (
-                      <span className="text-emerald-400 font-bold text-xs bg-emerald-400/10 px-3 py-1 rounded-full">جاهز للبروتوكول السحابي</span>
+                      <span className="text-emerald-400 font-bold text-xs bg-emerald-400/10 px-3 py-1 rounded-full">متصل</span>
                     ) : (
                       <span className="text-amber-400 font-bold text-xs bg-amber-400/10 px-3 py-1 rounded-full">غير معد محلياً (IndexedDB)</span>
                     )}
@@ -3075,7 +3199,7 @@ ${renderIdentifiers(ban.identifiers)}
                     {diagnosticsState.hasErrors ? (
                       <span className="text-amber-400 font-bold text-xs bg-amber-400/10 px-3 py-1 rounded-full flex items-center gap-1">محدود (يرجى مراجعة الجداول)</span>
                     ) : (
-                      <span className="text-emerald-400 font-bold text-xs bg-emerald-400/10 px-3 py-1 rounded-full">ممتاز ومتصل بالكامل</span>
+                      <span className="text-emerald-400 font-bold text-xs bg-emerald-400/10 px-3 py-1 rounded-full">متصل</span>
                     )}
                   </div>
                 </div>
