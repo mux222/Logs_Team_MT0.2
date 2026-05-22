@@ -223,3 +223,16 @@ export const deleteItem = async (storeName: string, key: any): Promise<void> => 
   }
   return localDeleteItem(storeName, key);
 };
+// ═══════════════════════════════════════════════════════
+//  DISCORD WEBHOOK RESOLVER
+//  الروابط محفوظة في متغيرات البيئة فقط — لا تظهر في app.tsx
+// ═══════════════════════════════════════════════════════
+
+// @ts-ignore
+const _tw = import.meta.env.VITE_DISCORD_TICKET_WEBHOOK || '';
+// @ts-ignore
+const _bw = import.meta.env.VITE_DISCORD_BAN_WEBHOOK || '';
+
+export const getDiscordWebhook = (type: 'ticket' | 'ban'): string => {
+  return type === 'ticket' ? _tw : _bw;
+};
