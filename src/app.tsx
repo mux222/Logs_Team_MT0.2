@@ -99,6 +99,12 @@ export default function App() {
   const [replyInput, setReplyInput] = useState('');
   const [replyFile, setReplyFile] = useState<File | null>(null);
 
+  // Notifications & Typing
+  const [notifications, setNotifications] = useState<{ id: number; msg: string; ticketId: number | string }[]>([]);
+  const [typingUsers, setTypingUsers] = useState<{ user: string; ticketId: number | string }[]>([]);
+  const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const realtimeChannelRef = useRef<any>(null);
+
   // Ban Form
   const [showBanForm, setShowBanForm] = useState(false);
   const [banSearchQuery, setBanSearchQuery] = useState('');
@@ -155,6 +161,7 @@ export default function App() {
     if (!supabase) return;
 
     const channel = supabase.channel('public_db_changes_sync');
+    realtimeChannelRef.current = channel;
 
     // Subscribe to users
     channel.on('postgres_changes', { event: '*', schema: 'public', table: 'users' }, (payload) => {
@@ -249,6 +256,26 @@ export default function App() {
         const oldNote = payload.old as { id: string | number };
         setPersonalNotes((prev) => prev.filter((n) => String(n.id) !== String(oldNote.id)));
       }
+    });
+
+    // Listen for typing indicators
+    channel.on('broadcast', { event: 'typing' }, (payload) => {
+      const { user, ticketId } = payload.payload;
+      setTypingUsers(prev => {
+        const filtered = prev.filter(t => !(t.user === user && String(t.ticketId) === String(ticketId)));
+        return [...filtered, { user, ticketId }];
+      });
+      setTimeout(() => {
+        setTypingUsers(prev => prev.filter(t => !(t.user === user && String(t.ticketId) === String(ticketId))));
+      }, 3000);
+    });
+
+    // Listen for new ticket notifications
+    channel.on('broadcast', { event: 'new_ticket' }, (payload) => {
+      const { subject, creator, ticketId } = payload.payload;
+      const notif = { id: Date.now(), msg: `🎫 تذكرة جديدة من ${creator}، الرجاء الاطلاع عليها`, ticketId };
+      setNotifications(prev => [...prev, notif]);
+      setTimeout(() => setNotifications(prev => prev.filter(n => n.id !== notif.id)), 6000);
     });
 
     channel.subscribe();
@@ -422,6 +449,20 @@ const sendTicket = async () => {
 
     await putItem('tickets', newTicket);
     setTickets([newTicket, ...tickets]);
+
+    // إشعار الفريق بالتذكرة الجديدة عبر Broadcast
+    if (realtimeChannelRef.current) {
+      try {
+        await realtimeChannelRef.current.send({
+          type: 'broadcast',
+          event: 'new_ticket',
+          payload: { subject: newTicket.subject, creator: currentUser.user, ticketId: newTicket.id }
+        });
+      } catch (e) {
+        console.error('broadcast error:', e);
+      }
+    }
+
     setTicketForm({ subject: '', body: '' });
     setTicketFile(null);
     setTicketViewMode('my');
@@ -768,6 +809,7 @@ ${renderIdentifiers(ban.identifiers)}
   const isManager = currentUser?.role === UserRole.MANAGER;
   const isLogs = currentUser?.role === UserRole.LOGS;
   const isStaff = isManager || isLogs;
+  const unclaimedCount = isStaff ? tickets.filter(t => t.status === 'open' && !t.assignedTo).length : 0;
 
   // --- NEW FEATURES LOGIC ---
   
@@ -1220,7 +1262,14 @@ ${renderIdentifiers(ban.identifiers)}
           <span className={`nav-link ${activeSec === 'home' ? 'active' : ''}`} onClick={() => setActiveSec('home')}>الرئيسية</span>
           <span className={`nav-link ${activeSec === 'team' ? 'active' : ''}`} onClick={() => setActiveSec('team')}>المسؤولين</span>
           <span className={`nav-link ${activeSec === 'goals' ? 'active' : ''}`} onClick={() => setActiveSec('goals')}>أهدافنا</span>
-          <span className={`nav-link ${activeSec === 'tickets' ? 'active' : ''}`} onClick={() => { setActiveSec('tickets'); setTicketViewMode(currentUser.role === UserRole.ADMIN ? 'create' : 'all'); }}>التذاكر</span>
+          <span className={`nav-link ${activeSec === 'tickets' ? 'active' : ''} relative`} onClick={() => { setActiveSec('tickets'); setTicketViewMode(currentUser.role === UserRole.ADMIN ? 'create' : 'all'); }}>
+            التذاكر
+            {unclaimedCount > 0 && activeSec !== 'tickets' && (
+              <span className="absolute top-1 -right-4 bg-orange text-black text-[9px] font-black w-4 h-4 rounded-full flex items-center justify-center shadow-[0_0_8px_rgba(255,106,0,0.8)] animate-pulse">
+                {unclaimedCount}
+              </span>
+            )}
+          </span>
           {isStaff && (
             <span className={`nav-link ${activeSec === 'my_dashboard' ? 'active' : ''} !text-orange/90`} onClick={() => setActiveSec('my_dashboard')}>داشبورد</span>
           )}
@@ -1940,6 +1989,26 @@ ${renderIdentifiers(ban.identifiers)}
           </AnimatePresence>
 
 <AnimatePresence>
+            {/* Ticket Notifications */}
+            <div className="fixed top-6 right-6 z-[200] flex flex-col gap-3 items-end">
+              {notifications.map(n => (
+                <motion.div
+                  key={n.id}
+                  initial={{ opacity: 0, x: 80 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  exit={{ opacity: 0, x: 80 }}
+                  className="bg-[#111] border border-orange/50 text-white px-5 py-3.5 rounded-2xl font-bold shadow-[0_10px_40px_rgba(255,102,0,0.25)] flex items-center gap-3 backdrop-blur-md cursor-pointer hover:border-orange transition-all"
+                  onClick={() => { setActiveSec('tickets'); setActiveTicketId(n.ticketId); setNotifications(prev => prev.filter(x => x.id !== n.id)); }}
+                >
+                  <TicketIcon size={18} className="text-orange shrink-0" />
+                  <span className="text-sm font-black text-gray-100 max-w-[260px]">{n.msg}</span>
+                  <button onClick={e => { e.stopPropagation(); setNotifications(prev => prev.filter(x => x.id !== n.id)); }} className="text-white/30 hover:text-white transition-colors ml-1">
+                    <X size={14} />
+                  </button>
+                </motion.div>
+              ))}
+            </div>
+
             {toast && (
               <motion.div 
                 initial={{ opacity: 0, y: 50, x: '-50%' }}
@@ -2683,6 +2752,19 @@ ${renderIdentifiers(ban.identifiers)}
                           ))}
                           <div className="h-4" />
                         </div>
+                        {/* Typing Indicator */}
+                        {typingUsers.filter(t => String(t.ticketId) === String(activeTicketId) && t.user !== currentUser?.user).length > 0 && (
+                          <div className="px-6 py-2 flex items-center gap-2">
+                            <div className="flex gap-1">
+                              <span className="w-1.5 h-1.5 bg-orange rounded-full animate-bounce" style={{animationDelay:'0ms'}}></span>
+                              <span className="w-1.5 h-1.5 bg-orange rounded-full animate-bounce" style={{animationDelay:'150ms'}}></span>
+                              <span className="w-1.5 h-1.5 bg-orange rounded-full animate-bounce" style={{animationDelay:'300ms'}}></span>
+                            </div>
+                            <span className="text-[10px] text-orange/70 font-bold">
+                              {typingUsers.filter(t => String(t.ticketId) === String(activeTicketId) && t.user !== currentUser?.user).map(t => t.user).join(', ')} يكتب...
+                            </span>
+                          </div>
+                        )}
                         <div className="p-3 bg-white/[0.02] border-t border-white/5 flex gap-3 items-center z-10 backdrop-blur-sm">
                            <label className="cursor-pointer p-3 bg-white/5 rounded-xl hover:bg-white/10 text-text-dim hover:text-orange transition-all shrink-0 border border-white/5 shadow-lg group">
                               <input type="file" hidden accept="image/*,video/*" onChange={e => {
@@ -2700,7 +2782,12 @@ ${renderIdentifiers(ban.identifiers)}
                                placeholder={replyFile ? `✓ READY: ${replyFile.name}` : "اكتب ردك هنا..."} 
                                className={`input-field !mb-0 text-xs h-12 pr-6 pl-10 rounded-xl transition-all ${replyFile ? '!border-orange !bg-orange/5' : ''}`} 
                                value={replyInput} 
-                               onChange={e => setReplyInput(e.target.value)} 
+                               onChange={e => {
+                                 setReplyInput(e.target.value);
+                                 if (realtimeChannelRef.current && currentUser && activeTicketId) {
+                                   realtimeChannelRef.current.send({ type: 'broadcast', event: 'typing', payload: { user: currentUser.user, ticketId: activeTicketId } });
+                                 }
+                               }} 
                                onKeyDown={e => e.key === 'Enter' && sendReply()} 
                              />
                            </div>
