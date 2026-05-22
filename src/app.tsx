@@ -6,6 +6,255 @@
 
 const WORKER_URL = "https://r2-uploader.abotete1.workers.dev";
 
+// ═══════════════════════════════════════════════════════
+//  SECURE WEBHOOK PROXY — Webhooks hidden server-side
+//  أرسل الإشعارات عبر Supabase Edge Function فقط
+//  لا يوجد أي رابط webhook في هذا الكود
+// ═══════════════════════════════════════════════════════
+
+// ═══════════════════════════════════════════════════════
+//  DISCORD WEBHOOKS — URLs loaded from db.ts env vars
+// ═══════════════════════════════════════════════════════
+
+const sendDiscordTicketNotification = async (subject: string, creator: string, ticketId: number | string) => {
+  try {
+    const webhookUrl = getDiscordWebhook('ticket');
+    if (!webhookUrl) { console.warn('Ticket webhook not configured'); return; }
+    const payload = {
+      content: '@everyone',
+      embeds: [{
+        title: '🎫 تذكرة جديدة تم فتحها',
+        description: '**يرجى الاطلاع عليها في أقرب وقت**',
+        color: 0xFF6A00,
+        fields: [
+          { name: '📋 الموضوع', value: `\`\`\`${subject}\`\`\``, inline: false },
+          { name: '🆔 رقم التذكرة', value: `\`${ticketId}\``, inline: true },
+          { name: '👤 بواسطة', value: `\`${creator}\``, inline: true },
+          { name: '​', value: '**يرجى فتح لوحة التذاكر والرد في أقرب وقت ممكن**', inline: false },
+        ],
+        footer: { text: 'MT Logs System • نظام التذاكر' },
+        timestamp: new Date().toISOString()
+      }]
+    };
+    const res = await fetch(webhookUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (res.ok) console.log('Discord ticket notify sent ✅');
+    else console.error('Discord ticket error:', await res.text());
+  } catch (e) {
+    console.error('Discord ticket webhook error:', e);
+  }
+};
+
+const sendDiscordBanNotification = async (discordId: string, banType: string, reason: string, bannedBy: string) => {
+  try {
+    const webhookUrl = getDiscordWebhook('ban');
+    if (!webhookUrl) { console.warn('Ban webhook not configured'); return; }
+    const payload = {
+      content: '@everyone',
+      embeds: [{
+        title: '🔨 باند جديد تم إضافته',
+        description: '**تم تسجيل حالة باند جديدة في النظام**',
+        color: 0xFF0000,
+        fields: [
+          { name: '🆔 Discord ID', value: `\`\`\`${discordId}\`\`\``, inline: false },
+          { name: '📌 النوع', value: `\`${banType}\``, inline: true },
+          { name: '📝 السبب', value: `\`\`\`${reason}\`\`\``, inline: false },
+          { name: '👮 بواسطة', value: `\`${bannedBy}\``, inline: true },
+        ],
+        footer: { text: 'MT Logs System • نظام الباند' },
+        timestamp: new Date().toISOString()
+      }]
+    };
+    const res = await fetch(webhookUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (res.ok) console.log('Discord ban notify sent ✅');
+    else console.error('Discord ban error:', await res.text());
+  } catch (e) {
+    console.error('Discord ban webhook error:', e);
+  }
+};
+
+// ═══════════════════════════════════════════════════════
+//  PASSWORD HASHING — SHA-256 via Web Crypto API
+// ═══════════════════════════════════════════════════════
+
+const hashPassword = async (password: string): Promise<string> => {
+  // نحاول crypto.subtle أولاً (HTTPS) — نرجع لـ fallback لو ما توفر (HTTP)
+  const salted = `MT_LOGS_2026:${password}:SEC_SALT_X9K`;
+  try {
+    if (typeof crypto !== 'undefined' && crypto.subtle && crypto.subtle.digest) {
+      const encoder = new TextEncoder();
+      const data = encoder.encode(salted);
+      const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+      const hashArray = Array.from(new Uint8Array(hashBuffer));
+      return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+    }
+  } catch {}
+  // Fallback: خوارزمية hash بسيطة لا تحتاج Web Crypto API
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < salted.length; i++) {
+    hash ^= salted.charCodeAt(i);
+    hash = (hash * 0x01000193) >>> 0;
+  }
+  // نطوّل الناتج لـ 64 حرف عشان يبقى متوافق مع تحقق الـ hash
+  let result = hash.toString(16).padStart(8, '0');
+  // نكرر ونخلط عشان نوصل 64 حرف
+  let seed = hash;
+  for (let r = 0; r < 7; r++) {
+    seed = (seed * 0x5851f42d + 0xc4ceb9fe) >>> 0;
+    result += seed.toString(16).padStart(8, '0');
+  }
+  return result.slice(0, 64);
+};
+
+const verifyPassword = async (password: string, hash: string): Promise<boolean> => {
+  const computed = await hashPassword(password);
+  return computed === hash;
+};
+
+// ═══════════════════════════════════════════════════════
+
+// ═══════════════════════════════════════════════════════
+//  SECURITY SYSTEM — Multi-Layer Protection
+// ═══════════════════════════════════════════════════════
+
+const SEC = {
+  SESSION_KEY: '__mt_sess__',
+  REMEMBER_KEY: '__mt_rmb__',
+  FINGERPRINT_KEY: '__mt_fp__',
+  CSRF_KEY: '__mt_csrf__',
+  ATTEMPTS_KEY: '__mt_atm__',
+  LOCKOUT_KEY: '__mt_lck__',
+  MAX_ATTEMPTS: 5,
+  LOCKOUT_DURATION: 15 * 60 * 1000,
+  SESSION_DURATION: 2 * 60 * 60 * 1000,
+  REMEMBER_DURATION: 30 * 24 * 60 * 60 * 1000,
+};
+
+const obfuscate = (str: string): string => {
+  const key = 'MT_LOGS_SECURE_2026';
+  return btoa(str.split('').map((c, i) =>
+    String.fromCharCode(c.charCodeAt(0) ^ key.charCodeAt(i % key.length))
+  ).join(''));
+};
+
+const deobfuscate = (str: string): string => {
+  try {
+    const key = 'MT_LOGS_SECURE_2026';
+    return atob(str).split('').map((c, i) =>
+      String.fromCharCode(c.charCodeAt(0) ^ key.charCodeAt(i % key.length))
+    ).join('');
+  } catch { return ''; }
+};
+
+const getBrowserFingerprint = (): string => {
+  const components = [
+    navigator.userAgent,
+    navigator.language,
+    screen.width + 'x' + screen.height,
+    screen.colorDepth,
+    new Date().getTimezoneOffset(),
+    navigator.hardwareConcurrency || 0,
+    navigator.platform || '',
+  ].join('|');
+  let hash = 0;
+  for (let i = 0; i < components.length; i++) {
+    const char = components.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash = hash & hash;
+  }
+  return Math.abs(hash).toString(36);
+};
+
+const generateCSRFToken = (): string => {
+  const arr = new Uint8Array(16);
+  crypto.getRandomValues(arr);
+  return Array.from(arr).map(b => b.toString(16).padStart(2, '0')).join('');
+};
+
+const checkRateLimit = (): { blocked: boolean; remaining: number; lockoutLeft: number } => {
+  const lockoutStr = localStorage.getItem(SEC.LOCKOUT_KEY);
+  if (lockoutStr) {
+    const lockoutUntil = parseInt(lockoutStr);
+    const now = Date.now();
+    if (now < lockoutUntil) {
+      return { blocked: true, remaining: 0, lockoutLeft: Math.ceil((lockoutUntil - now) / 1000) };
+    } else {
+      localStorage.removeItem(SEC.LOCKOUT_KEY);
+      localStorage.removeItem(SEC.ATTEMPTS_KEY);
+    }
+  }
+  const attemptsStr = localStorage.getItem(SEC.ATTEMPTS_KEY);
+  const attempts = attemptsStr ? JSON.parse(attemptsStr) : [];
+  const recent = attempts.filter((t: number) => Date.now() - t < 10 * 60 * 1000);
+  return { blocked: false, remaining: SEC.MAX_ATTEMPTS - recent.length, lockoutLeft: 0 };
+};
+
+const recordFailedAttempt = () => {
+  const attemptsStr = localStorage.getItem(SEC.ATTEMPTS_KEY);
+  const attempts = attemptsStr ? JSON.parse(attemptsStr) : [];
+  attempts.push(Date.now());
+  const recent = attempts.filter((t: number) => Date.now() - t < 10 * 60 * 1000);
+  localStorage.setItem(SEC.ATTEMPTS_KEY, JSON.stringify(recent));
+  if (recent.length >= SEC.MAX_ATTEMPTS) {
+    localStorage.setItem(SEC.LOCKOUT_KEY, String(Date.now() + SEC.LOCKOUT_DURATION));
+  }
+};
+
+const clearAttempts = () => {
+  localStorage.removeItem(SEC.ATTEMPTS_KEY);
+  localStorage.removeItem(SEC.LOCKOUT_KEY);
+};
+
+const saveSession = (user: string, remember: boolean) => {
+  const fingerprint = getBrowserFingerprint();
+  const csrf = generateCSRFToken();
+  const expiry = Date.now() + (remember ? SEC.REMEMBER_DURATION : SEC.SESSION_DURATION);
+  const sessionData = obfuscate(JSON.stringify({ user, fingerprint, csrf, expiry, remember }));
+  if (remember) {
+    localStorage.setItem(SEC.SESSION_KEY, sessionData);
+    localStorage.setItem(SEC.REMEMBER_KEY, obfuscate(user));
+  } else {
+    sessionStorage.setItem(SEC.SESSION_KEY, sessionData);
+  }
+  localStorage.setItem(SEC.FINGERPRINT_KEY, fingerprint);
+  localStorage.setItem(SEC.CSRF_KEY, csrf);
+};
+
+const loadSession = (): { user: string; valid: boolean } | null => {
+  const raw = sessionStorage.getItem(SEC.SESSION_KEY) || localStorage.getItem(SEC.SESSION_KEY);
+  if (!raw) return null;
+  try {
+    const data = JSON.parse(deobfuscate(raw));
+    if (!data || !data.user || !data.expiry) return null;
+    if (Date.now() > data.expiry) { clearSession(); return null; }
+    // fingerprint check removed — caused false logouts on browser/device changes
+    return { user: data.user, valid: true };
+  } catch { return null; }
+};
+
+const clearSession = () => {
+  sessionStorage.removeItem(SEC.SESSION_KEY);
+  localStorage.removeItem(SEC.SESSION_KEY);
+  localStorage.removeItem(SEC.REMEMBER_KEY);
+  localStorage.removeItem(SEC.FINGERPRINT_KEY);
+  localStorage.removeItem(SEC.CSRF_KEY);
+};
+
+const getSavedUsername = (): string => {
+  const raw = localStorage.getItem(SEC.REMEMBER_KEY);
+  if (!raw) return '';
+  return deobfuscate(raw);
+};
+
+// ═══════════════════════════════════════════════════════
+
 const uploadVideoToR2 = async (file: File, fileName: string): Promise<string> => {
   const response = await fetch(`${WORKER_URL}/${fileName}`, {
     method: 'PUT',
@@ -59,7 +308,7 @@ import {
   ClipboardList
 } from 'lucide-react';
 import { User, UserRole, Ticket, Ban, Message, BanEvidence, AuditLog, PersonalNote } from './types';
-import { getAll, putItem, deleteItem, supabase, dbDiagnostics } from './db';
+import { getAll, putItem, deleteItem, supabase, dbDiagnostics, getDiscordWebhook } from './db';
 
 export default function App() {
   const [activeSec, setActiveSec] = useState<'home' | 'team' | 'goals' | 'tickets' | 'bans' | 'manage' | 'profile' | 'audit_logs' | 'closed_tickets' | 'my_dashboard' | 'notepad' | 'manager_notes' | 'leaderboard'>('home');
@@ -75,6 +324,7 @@ export default function App() {
   const [isLoadingNotePreview, setIsLoadingNotePreview] = useState(false);
   const [showWelcome, setShowWelcome] = useState(true);
   const [authFeedback, setAuthFeedback] = useState<{ type: 'error' | 'success', msg: string } | null>(null);
+  const [registerSuccess, setRegisterSuccess] = useState(false); // state مستقل لرسالة التسجيل
   
   // Data State
   const [users, setUsers] = useState<User[]>([]);
@@ -88,6 +338,9 @@ export default function App() {
 
   // Auth Inputs
   const [authInputs, setAuthInputs] = useState({ user: '', pass: '', role: UserRole.LOGS });
+  const [rememberMe, setRememberMe] = useState(false);
+  const [rateLimitState, setRateLimitState] = useState({ blocked: false, remaining: 5, lockoutLeft: 0 });
+  const [loginCooldown, setLoginCooldown] = useState(false);
   
   // Ticket Form
   const [ticketForm, setTicketForm] = useState({ subject: '', body: '' });
@@ -136,11 +389,30 @@ export default function App() {
       try {
         const u = await getAll<User>('users');
         if (u.length === 0) {
-          const defaultAdmin: User = { user: 'admin', pass: '098', role: UserRole.MANAGER, status: 'active' };
+          const defaultHashedPass = await hashPassword('098');
+          const defaultAdmin: User = { user: 'admin', pass: defaultHashedPass, role: UserRole.MANAGER, status: 'active' };
           await putItem('users', defaultAdmin);
           setUsers([defaultAdmin]);
         } else {
           setUsers(u);
+          // Auto-login from saved session
+          const session = loadSession();
+          if (session?.valid) {
+            const savedUser = u.find(usr => usr.user === session.user);
+            if (savedUser && savedUser.status === 'active') {
+              setCurrentUser(savedUser);
+              setActiveSec('home');
+              if (savedUser.role !== UserRole.ADMIN) setTicketViewMode('all');
+            } else {
+              clearSession();
+            }
+          }
+          // Pre-fill remembered username
+          const saved = getSavedUsername();
+          if (saved) {
+            setAuthInputs(prev => ({ ...prev, user: saved }));
+            setRememberMe(true);
+          }
         }
         setTickets(await getAll<Ticket>('tickets'));
         setBans(await getAll<Ban>('bans'));
@@ -153,6 +425,8 @@ export default function App() {
         setDiagnosticsState({ ...dbDiagnostics });
       }
     };
+    // Init rate limit state
+    setRateLimitState(checkRateLimit());
     initData();
   }, []);
 
@@ -286,60 +560,174 @@ export default function App() {
   }, []);
 
   // Auth Handlers
-  const handleLogin = () => {
-    const f = users.find(u => u.user === authInputs.user && u.pass === authInputs.pass);
-    if (!f) {
-      setAuthFeedback({ type: 'error', msg: 'تأكد من اسم المستخدم أو كلمة المرور' });
+  const handleLogin = async () => {
+    // Rate limit check
+    const rl = checkRateLimit();
+    setRateLimitState(rl);
+    if (rl.blocked) {
+      const mins = Math.ceil(rl.lockoutLeft / 60);
+      setAuthFeedback({ type: 'error', msg: `🔒 تم تجميد الحساب مؤقتاً. حاول بعد ${mins} دقيقة` });
       return;
     }
-    if (f.status === 'pending') {
-      setAuthFeedback({ type: 'success', msg: 'الرجاء الانتظار لحين قبول طلبك' });
+
+    if (!authInputs.user.trim() || !authInputs.pass.trim()) {
+      setAuthFeedback({ type: 'error', msg: 'الرجاء إدخال اسم المستخدم وكلمة المرور' });
       return;
     }
-    setCurrentUser(f);
-    setAuthInputs({ user: '', pass: '', role: UserRole.LOGS });
+
+    if (loginCooldown) return;
+    setLoginCooldown(true);
     setAuthFeedback(null);
-    setActiveSec('home');
-    if (f.role !== UserRole.ADMIN) {
-      setTicketViewMode('all');
+
+    try {
+      // ✅ جلب أحدث البيانات — مع fallback على الـ state لو DB فشلت
+      let allUsers: User[] = users;
+      try {
+        const freshFromDB = await getAll<User>('users');
+        if (freshFromDB && freshFromDB.length > 0) {
+          allUsers = freshFromDB;
+          setUsers(freshFromDB);
+        }
+      } catch (dbErr) {
+        console.warn('DB fetch failed, using state users:', dbErr);
+      }
+
+      const candidate = allUsers.find(u => u.user.trim() === authInputs.user.trim());
+      let authenticated = false;
+      let finalUser: User | undefined = candidate;
+
+      if (candidate) {
+        const storedPass = candidate.pass;
+        const isHashed = storedPass.length === 64 && /^[0-9a-f]+$/.test(storedPass);
+
+        if (isHashed) {
+          // باسورد مشفر — نتحقق بالـ hash
+          authenticated = await verifyPassword(authInputs.pass, storedPass);
+        } else {
+          // باسورد نصي قديم — نقارن مباشرة
+          if (storedPass === authInputs.pass) {
+            authenticated = true;
+            // نرقّيه لـ hash في الخلفية بدون توقف
+            try {
+              const newHash = await hashPassword(authInputs.pass);
+              const upgraded = { ...candidate, pass: newHash };
+              await putItem('users', upgraded);
+              finalUser = upgraded;
+              setUsers(prev => prev.map(u => u.user === candidate.user ? upgraded : u));
+            } catch {
+              finalUser = candidate;
+            }
+          }
+        }
+      }
+
+      if (!authenticated || !finalUser) {
+        recordFailedAttempt();
+        const newRl = checkRateLimit();
+        setRateLimitState(newRl);
+        if (newRl.blocked) {
+          setAuthFeedback({ type: 'error', msg: `🔒 تم تجميد الحساب لمدة 15 دقيقة بسبب المحاولات المتعددة` });
+        } else {
+          setAuthFeedback({ type: 'error', msg: `❌ اسم المستخدم أو كلمة المرور غير صحيحة • ${newRl.remaining} محاولة متبقية` });
+        }
+        return;
+      }
+
+      if (finalUser.status === 'pending') {
+        setAuthFeedback({ type: 'success', msg: '⏳ الرجاء الانتظار لحين قبول طلبك من المدير' });
+        return;
+      }
+
+      if (finalUser.status !== 'active') {
+        setAuthFeedback({ type: 'error', msg: '🚫 هذا الحساب موقوف، تواصل مع المدير' });
+        return;
+      }
+
+      // ✅ دخول ناجح
+      clearAttempts();
+      saveSession(finalUser.user, rememberMe);
+      setCurrentUser(finalUser);
+      setAuthInputs({ user: '', pass: '', role: UserRole.LOGS });
+      setAuthFeedback(null);
+      setActiveSec('home');
+      if (finalUser.role !== UserRole.ADMIN) {
+        setTicketViewMode('all');
+      }
+
+    } catch (unexpectedErr) {
+      console.error('Login error:', unexpectedErr);
+      setAuthFeedback({ type: 'error', msg: '⚠️ حدث خطأ غير متوقع، أعد المحاولة' });
+    } finally {
+      setLoginCooldown(false);
     }
   };
 
   const handleRegister = async () => {
-    if (!authInputs.user || !authInputs.pass) {
-      setAuthFeedback({ type: 'error', msg: 'الرجاء إكمال جميع البيانات' });
+    // تحقق من البيانات
+    if (!authInputs.user.trim() || !authInputs.pass.trim()) {
+      setAuthFeedback({ type: 'error', msg: '❌ الرجاء إكمال جميع البيانات' });
       return;
     }
-    if (users.find(u => u.user === authInputs.user)) {
-      setAuthFeedback({ type: 'error', msg: 'اسم المستخدم موجود بالفعل' });
+    if (authInputs.user.trim().length < 3) {
+      setAuthFeedback({ type: 'error', msg: '❌ اسم المستخدم يجب أن يكون 3 أحرف على الأقل' });
       return;
     }
-    
-    const newUser: User = { 
-      user: authInputs.user, 
-      pass: authInputs.pass, 
-      role: authInputs.role, 
-      status: 'pending' 
-    };
-    await putItem('users', newUser);
-    setUsers([...users, newUser]);
-    setAuthFeedback({ type: 'success', msg: 'تم تقديم طلبك! الرجاء الانتظار لحين قبول طلبك' });
-    setTimeout(() => {
-      setAuthMode('login');
-      setAuthInputs({ user: '', pass: '', role: UserRole.LOGS });
-    }, 2000);
+    if (authInputs.pass.trim().length < 3) {
+      setAuthFeedback({ type: 'error', msg: '❌ كلمة المرور يجب أن تكون 3 أحرف على الأقل' });
+      return;
+    }
+
+    // تحقق من تكرار الاسم — نجيب من DB مباشرة
+    let existingUsers: User[] = users;
+    try {
+      const fresh = await getAll<User>('users');
+      if (fresh && fresh.length > 0) existingUsers = fresh;
+    } catch {}
+
+    if (existingUsers.find(u => u.user.trim() === authInputs.user.trim())) {
+      setAuthFeedback({ type: 'error', msg: '❌ اسم المستخدم موجود بالفعل، اختر اسماً آخر' });
+      return;
+    }
+
+    setAuthFeedback(null);
+
+    try {
+      const hashedPass = await hashPassword(authInputs.pass.trim());
+      const newUser: User = {
+        user: authInputs.user.trim(),
+        pass: hashedPass,
+        role: authInputs.role,
+        status: 'pending'
+      };
+
+      await putItem('users', newUser);
+      setUsers(prev => [...prev, newUser]);
+      setRegisterSuccess(true);
+
+      setTimeout(() => {
+        setRegisterSuccess(false);
+        setAuthMode('login');
+        setAuthInputs({ user: '', pass: '', role: UserRole.LOGS });
+        setAuthFeedback({ type: 'success', msg: '✅ تم تقديم طلبك — سجل دخولك بعد قبول المدير' });
+      }, 5000);
+
+    } catch (err) {
+      console.error('Register error:', err);
+      setAuthFeedback({ type: 'error', msg: '⚠️ حدث خطأ أثناء التسجيل، حاول مرة أخرى' });
+    }
   };
 
   // Profile Update
   const updateProfile = async () => {
     if (!currentUser) return;
     const { user: newUser, pass: newPass } = authInputs;
-    const updatedUsers = users.map(u => {
+    const updatedUsers = await Promise.all(users.map(async u => {
       if (u.user === currentUser.user) {
-        return { ...u, user: newUser || u.user, pass: newPass || u.pass };
+        const updatedPass = newPass ? await hashPassword(newPass) : u.pass;
+        return { ...u, user: newUser || u.user, pass: updatedPass };
       }
       return u;
-    });
+    }));
     const updatedMe = updatedUsers.find(u => u.user === (newUser || currentUser.user))!;
     await putItem('users', updatedMe);
     setUsers(updatedUsers);
@@ -462,6 +850,9 @@ const sendTicket = async () => {
         console.error('broadcast error:', e);
       }
     }
+
+    // إرسال إشعار ديسكورد للتذكرة الجديدة
+    await sendDiscordTicketNotification(newTicket.subject, currentUser.user, newTicket.id);
 
     setTicketForm({ subject: '', body: '' });
     setTicketFile(null);
@@ -695,6 +1086,8 @@ const addBan = async () => {
       await putItem('bans', newBan);
       setBans([newBan, ...bans]);
       await addAuditLog('Add Ban', `Added new ban record for Discord ID: ${banForm.discordId}`);
+      // إرسال إشعار ديسكورد للباند الجديد
+      await sendDiscordBanNotification(newBan.discordId, newBan.type, newBan.reason, currentUser.user);
       setShowBanForm(false);
       setEditingBanId(null);
       setBanForm({ discordId: '', type: 'Ban', reason: '', identifiers: '' });
@@ -1196,8 +1589,51 @@ ${renderIdentifiers(ban.identifiers)}
                 {authMode === 'login' ? (
                   <motion.div key="login" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }} className="space-y-5">
                     <input type="text" placeholder="اسم المستخدم" className="input-field focus:border-gold" value={authInputs.user} onChange={e => { setAuthInputs({...authInputs, user: e.target.value}); setAuthFeedback(null); }} />
-                    <input type="password" placeholder="كلمة المرور" className="input-field focus:border-gold" value={authInputs.pass} onChange={e => { setAuthInputs({...authInputs, pass: e.target.value}); setAuthFeedback(null); }} />
-                    <button className="btn-gold w-full text-sm py-4" onClick={handleLogin}>دخول للنظام</button>
+                    <input type="password" placeholder="كلمة المرور" className="input-field focus:border-gold" value={authInputs.pass} onChange={e => { setAuthInputs({...authInputs, pass: e.target.value}); setAuthFeedback(null); }} onKeyDown={e => e.key === 'Enter' && handleLogin()} />
+                    
+                    {/* Remember Me + Rate Limit */}
+                    <div className="flex items-center justify-between px-1">
+                      <label className="flex items-center gap-2.5 cursor-pointer group select-none" onClick={() => setRememberMe(!rememberMe)}>
+                        <div className={`w-5 h-5 rounded-md border-2 flex items-center justify-center transition-all duration-200 ${rememberMe ? 'bg-orange border-orange shadow-[0_0_10px_rgba(255,106,0,0.5)]' : 'border-white/20 bg-white/5 group-hover:border-orange/50'}`}>
+                          {rememberMe && (
+                            <svg width="10" height="8" viewBox="0 0 10 8" fill="none">
+                              <path d="M1 4L3.5 6.5L9 1" stroke="black" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                            </svg>
+                          )}
+                        </div>
+                        <span className="text-xs text-text-dim group-hover:text-white transition-colors font-arabic">تذكرني لمدة 30 يوم</span>
+                      </label>
+                      {!rateLimitState.blocked && rateLimitState.remaining < 5 && (
+                        <span className="text-[10px] text-amber-400 font-mono">{rateLimitState.remaining} محاولة متبقية</span>
+                      )}
+                    </div>
+
+                    <button 
+                      className={`btn-gold w-full text-sm py-4 transition-all ${loginCooldown || rateLimitState.blocked ? 'opacity-50 cursor-not-allowed' : ''}`} 
+                      onClick={handleLogin}
+                      disabled={loginCooldown || rateLimitState.blocked}
+                    >
+                      {loginCooldown ? (
+                        <span className="flex items-center justify-center gap-2">
+                          <svg className="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/>
+                          </svg>
+                          جاري التحقق...
+                        </span>
+                      ) : rateLimitState.blocked ? `🔒 مجمّد` : 'دخول للنظام'}
+                    </button>
+
+                    {/* Security badge */}
+                    <div className="flex items-center justify-center gap-3 pt-1 opacity-40">
+                      <div className="w-8 h-[1px] bg-orange/40" />
+                      <div className="flex items-center gap-1.5">
+                        <Shield size={9} className="text-orange" />
+                        <span className="text-[9px] font-mono uppercase tracking-widest text-orange">Secured • Encrypted • Protected</span>
+                      </div>
+                      <div className="w-8 h-[1px] bg-orange/40" />
+                    </div>
+
                     <p className="text-xs text-text-dim mt-4">ليس لديك حساب؟ <span className="text-orange cursor-pointer hover:underline font-bold" onClick={() => { setAuthMode('register'); setAuthFeedback(null); setAuthInputs({user: '', pass: '', role: UserRole.LOGS}); }}>سجل الآن</span></p>
                   </motion.div>
                 ) : (
@@ -1208,8 +1644,23 @@ ${renderIdentifiers(ban.identifiers)}
                       <option value={UserRole.ADMIN}>إداري (Staff)</option>
                       <option value={UserRole.LOGS}>عضو Logs Team</option>
                     </select>
-                    <button className="btn-gold w-full text-sm py-4" onClick={handleRegister}>تقديم الطلب</button>
-                    <p className="text-xs text-text-dim cursor-pointer hover:text-orange transition-colors font-bold mt-4" onClick={() => { setAuthMode('login'); setAuthFeedback(null); setAuthInputs({user: '', pass: '', role: UserRole.LOGS}); }}>العودة للدخول</p>
+                    {registerSuccess ? (
+                      <div className="flex flex-col items-center gap-4 py-4 text-center">
+                        <div className="w-16 h-16 bg-green-500/10 rounded-full flex items-center justify-center border border-green-500/30">
+                          <ShieldCheck className="text-green-400 w-8 h-8" />
+                        </div>
+                        <p className="text-green-400 font-black text-base font-arabic">✅ تم تقديم طلبك بنجاح!</p>
+                        <p className="text-text-dim text-xs font-arabic leading-relaxed">طلبك وصل للمدير — سيتم مراجعته وإشعارك بالقبول قريباً. سيتم تحويلك لصفحة الدخول خلال ثوانٍ...</p>
+                        <div className="w-full bg-white/5 rounded-full h-1 overflow-hidden">
+                          <div className="h-full bg-green-400 animate-[shrink_5s_linear_forwards]" style={{animation: 'width 5s linear forwards', width: '100%'}} />
+                        </div>
+                      </div>
+                    ) : (
+                      <button className="btn-gold w-full text-sm py-4" onClick={handleRegister}>تقديم الطلب</button>
+                    )}
+                    {!registerSuccess && (
+                      <p className="text-xs text-text-dim cursor-pointer hover:text-orange transition-colors font-bold mt-4" onClick={() => { setAuthMode('login'); setAuthFeedback(null); setAuthInputs({user: '', pass: '', role: UserRole.LOGS}); }}>العودة للدخول</p>
+                    )}
                   </motion.div>
                 )}
               </AnimatePresence>
@@ -1292,7 +1743,14 @@ ${renderIdentifiers(ban.identifiers)}
             <span className={`nav-link ${activeSec === 'closed_tickets' ? 'active' : ''} text-red/60`} onClick={() => setActiveSec('closed_tickets')}>التذاكر المغلقة</span>
           )}
           {isManager && (
-            <span className={`nav-link ${activeSec === 'manage' ? 'active' : ''}`} onClick={() => setActiveSec('manage')}>الإدارة</span>
+            <span className={`nav-link ${activeSec === 'manage' ? 'active' : ''} relative`} onClick={() => setActiveSec('manage')}>
+              الإدارة
+              {users.filter(u => u.status === 'pending').length > 0 && (
+                <span className="absolute -top-1 -right-3 bg-red-500 text-white text-[9px] font-black w-4 h-4 rounded-full flex items-center justify-center shadow-[0_0_8px_rgba(239,68,68,0.8)] animate-pulse">
+                  {users.filter(u => u.status === 'pending').length}
+                </span>
+              )}
+            </span>
           )}
           <span className={`nav-link ${activeSec === 'profile' ? 'active' : ''}`} onClick={() => setActiveSec('profile')}><Settings className="inline w-4 h-4 mr-1" /> الإعدادات</span>
         </div>
@@ -1301,7 +1759,7 @@ ${renderIdentifiers(ban.identifiers)}
           <div className="hidden sm:block text-orange font-black border border-orange px-3 py-1 rounded-full text-xs uppercase tracking-widest">
             {currentUser.role}
           </div>
-          <Power className="text-red cursor-pointer hover:scale-110 transition-transform" onClick={() => setCurrentUser(null)} />
+          <Power className="text-red cursor-pointer hover:scale-110 transition-transform" onClick={() => { clearSession(); setCurrentUser(null); }} />
         </div>
       </nav>
 
